@@ -11,7 +11,7 @@ if (!API_KEY) {
 export const getApiKeyError = () => apiKeyError;
 export const isGeminiAvailable = () => !!API_KEY && !apiKeyError;
 
-const GLOBAL_GEMINI_SYSTEM_INSTRUCTION = `You are Patel Chat, a versatile AI assistant. Your goal is to provide the most relevant and helpful response.
+const DEFAULT_SYSTEM_INSTRUCTION = `You are Patel Chat, a versatile AI assistant. Your goal is to provide the most relevant and helpful response.
 
 Identity and Creation:
 - If asked about your name, you are Patel Chat.
@@ -43,9 +43,9 @@ const formatHistoryForGemini = (messages) => {
 };
 
 /**
- * Ensure chat history starts with a user message
- * @param {Array} history - Array of message objects
- * @returns {Array} Sanitized history
+ * Sanitize chat history: remove any non-user messages from the beginning
+ * @param {Array} history
+ * @returns {Array} cleaned history
  */
 const sanitizeHistory = (history) => {
   const cleaned = [...history];
@@ -56,27 +56,26 @@ const sanitizeHistory = (history) => {
 };
 
 /**
- * Send a message to Gemini API
- * @param {string} messageText - The message to send
+ * Send a message to Gemini API and stream the response
+ * @param {string} messageText - User's message
  * @param {Array} history - Chat history
- * @param {string} systemInstructionOverride - Custom system instruction
- * @returns {Promise<AsyncIterable>} Stream of responses
+ * @param {string} systemInstructionOverride - Optional override for system instruction
+ * @returns {Promise<AsyncIterable>} Stream adapter
  */
 export const sendMessage = async (messageText, history, systemInstructionOverride) => {
   if (!isGeminiAvailable()) {
     throw new Error(apiKeyError || "Gemini AI client is not available.");
   }
-  
+
   if (!messageText.trim()) {
     throw new Error("Message text cannot be empty.");
   }
 
-  const activeSystemInstruction = (systemInstructionOverride && systemInstructionOverride.trim() !== '') 
-    ? systemInstructionOverride 
-    : GLOBAL_GEMINI_SYSTEM_INSTRUCTION;
+  const activeSystemInstruction = (systemInstructionOverride && systemInstructionOverride.trim() !== '')
+    ? systemInstructionOverride
+    : DEFAULT_SYSTEM_INSTRUCTION;
 
   try {
-    // Import Google Generative AI dynamically
     const { GoogleGenerativeAI } = await import('@google/generative-ai');
     const ai = new GoogleGenerativeAI(API_KEY);
 
@@ -91,13 +90,11 @@ export const sendMessage = async (messageText, history, systemInstructionOverrid
 
     const cleanedHistory = sanitizeHistory(history);
 
-    if (cleanedHistory.length === 0 || cleanedHistory[0].sender !== 'user') {
-      throw new Error("Gemini API requires the first message in history to be from the user.");
-    }
-
-    const chatInstance = model.startChat({
-      history: formatHistoryForGemini(cleanedHistory),
-    });
+    const chatInstance = model.startChat(
+      cleanedHistory.length > 0
+        ? { history: formatHistoryForGemini(cleanedHistory) }
+        : {} // No history if empty
+    );
 
     const result = await chatInstance.sendMessageStream(messageText);
     const sdkStream = result.stream;
@@ -154,10 +151,6 @@ export const sendMessage = async (messageText, history, systemInstructionOverrid
 
   } catch (error) {
     console.error("Error sending message to Gemini:", error);
-    if (error instanceof Error) {
-      throw new Error(`Gemini API error: ${error.message}`);
-    }
-    throw new Error('Unknown error sending message to Gemini API');
+    throw new Error(`Gemini API error: ${error.message || 'Unknown error'}`);
   }
 };
-
