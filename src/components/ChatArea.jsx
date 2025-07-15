@@ -1,8 +1,8 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Send, Loader2, Copy, Download, Trash2, Zap, Code, BarChart3, Share } from 'lucide-react';
+import { Send, Loader2, Copy, Download, Trash2, Zap } from 'lucide-react';
 import { sendMessage } from '../services/geminiService.js';
 import ChartRenderer, { parseChartFromText } from './ChartRenderer.jsx';
-import CodeEditor, { extractCodeBlocks, InlineCodeEditor } from './CodeEditor.jsx';
+import CodeEditor, { extractCodeBlocks } from './CodeEditor.jsx';
 import DiagramRenderer, { extractDiagrams } from './DiagramRenderer.jsx';
 
 const ChatArea = ({
@@ -26,12 +26,14 @@ const ChatArea = ({
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   };
 
-  const handleSendMessage = async (messageText = inputText) => {
-    if (!messageText.trim() || isLoading || isApiKeyMissing || !activeChatSession) return;
+  const handleSendMessage = async () => {
+    const messageText = inputText.trim();
+
+    if (!messageText || isLoading || isApiKeyMissing || !activeChatSession) return;
 
     const userMessage = {
       id: `msg-${Date.now()}`,
-      text: messageText.trim(),
+      text: messageText,
       sender: 'user',
       timestamp: Date.now()
     };
@@ -47,30 +49,43 @@ const ChatArea = ({
     setIsLoading(true);
 
     try {
-      const response = await sendMessage(messageText.trim(), activeChatSession.messages);
-      
-      const aiMessage = {
-        id: `msg-${Date.now()}-ai`,
-        text: response,
-        sender: 'ai',
-        timestamp: Date.now()
-      };
+      const stream = await sendMessage(messageText, updatedSession.messages);
 
-      const finalSession = {
+      const aiMessageId = `msg-${Date.now()}-ai`;
+      let fullResponse = '';
+
+      const sessionWithPlaceholder = {
         ...updatedSession,
-        messages: [...updatedSession.messages, aiMessage],
+        messages: [
+          ...updatedSession.messages,
+          {
+            id: aiMessageId,
+            text: '',
+            sender: 'ai',
+            timestamp: Date.now()
+          }
+        ],
         lastUpdatedAt: Date.now()
       };
 
-      // Update title if this is the first exchange
-      if (activeChatSession.messages.length === 0) {
-        finalSession.title = messageText.trim().slice(0, 50) + (messageText.trim().length > 50 ? '...' : '');
+      onUpdateChatSession(sessionWithPlaceholder);
+
+      for await (const chunk of stream) {
+        fullResponse = chunk.text;
+
+        const updatedStreamSession = {
+          ...sessionWithPlaceholder,
+          messages: sessionWithPlaceholder.messages.map(msg =>
+            msg.id === aiMessageId ? { ...msg, text: fullResponse } : msg
+          ),
+          lastUpdatedAt: Date.now()
+        };
+
+        onUpdateChatSession(updatedStreamSession);
       }
 
-      onUpdateChatSession(finalSession);
+      await stream.response;
     } catch (error) {
-      console.error('Error sending message:', error);
-      
       const errorMessage = {
         id: `msg-${Date.now()}-error`,
         text: `Sorry, I encountered an error: ${error.message}`,
@@ -80,7 +95,7 @@ const ChatArea = ({
       };
 
       const errorSession = {
-        ...updatedSession,
+        ...activeChatSession,
         messages: [...updatedSession.messages, errorMessage],
         lastUpdatedAt: Date.now()
       };
@@ -114,13 +129,13 @@ const ChatArea = ({
 
   const exportChat = () => {
     if (!activeChatSession) return;
-    
+
     const chatData = {
       title: activeChatSession.title,
       messages: activeChatSession.messages,
       exportedAt: new Date().toISOString()
     };
-    
+
     const blob = new Blob([JSON.stringify(chatData, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -134,8 +149,7 @@ const ChatArea = ({
 
   const renderMessageContent = (message) => {
     const content = message.text;
-    
-    // Check for charts
+
     const chartConfig = parseChartFromText(content);
     if (chartConfig) {
       return (
@@ -146,12 +160,11 @@ const ChatArea = ({
       );
     }
 
-    // Check for code blocks
     const codeBlocks = extractCodeBlocks(content);
     if (codeBlocks.length > 0) {
       let remainingContent = content;
       const elements = [];
-      
+
       codeBlocks.forEach((block, index) => {
         const parts = remainingContent.split(block.fullMatch);
         if (parts[0]) {
@@ -161,7 +174,7 @@ const ChatArea = ({
             </div>
           );
         }
-        
+
         elements.push(
           <CodeEditor
             key={`code-${index}`}
@@ -171,10 +184,10 @@ const ChatArea = ({
             title={`${block.language} Code`}
           />
         );
-        
+
         remainingContent = parts.slice(1).join(block.fullMatch);
       });
-      
+
       if (remainingContent) {
         elements.push(
           <div key="remaining" className="mt-4 whitespace-pre-wrap">
@@ -182,16 +195,15 @@ const ChatArea = ({
           </div>
         );
       }
-      
+
       return <div>{elements}</div>;
     }
 
-    // Check for diagrams
     const diagrams = extractDiagrams(content);
     if (diagrams.length > 0) {
       let remainingContent = content;
       const elements = [];
-      
+
       diagrams.forEach((diagram, index) => {
         const parts = remainingContent.split(diagram.fullMatch);
         if (parts[0]) {
@@ -201,7 +213,7 @@ const ChatArea = ({
             </div>
           );
         }
-        
+
         elements.push(
           <DiagramRenderer
             key={`diagram-${index}`}
@@ -209,10 +221,10 @@ const ChatArea = ({
             title={`Diagram ${index + 1}`}
           />
         );
-        
+
         remainingContent = parts.slice(1).join(diagram.fullMatch);
       });
-      
+
       if (remainingContent) {
         elements.push(
           <div key="remaining" className="mt-4 whitespace-pre-wrap">
@@ -220,11 +232,10 @@ const ChatArea = ({
           </div>
         );
       }
-      
+
       return <div>{elements}</div>;
     }
 
-    // Regular text content
     return <div className="whitespace-pre-wrap">{content}</div>;
   };
 
@@ -252,7 +263,6 @@ const ChatArea = ({
 
   return (
     <div className="flex-1 flex flex-col glass-panel rounded-lg ml-0 md:ml-4">
-      {/* Header */}
       <div className="p-4 border-b border-white/10 flex items-center justify-between">
         <div className="flex-1 min-w-0">
           <h2 className="text-lg font-semibold text-white truncate">
@@ -262,7 +272,7 @@ const ChatArea = ({
             {activeChatSession.messages.length} message{activeChatSession.messages.length !== 1 ? 's' : ''}
           </p>
         </div>
-        
+
         <div className="flex items-center space-x-2">
           <button
             onClick={exportChat}
@@ -271,7 +281,7 @@ const ChatArea = ({
           >
             <Download className="h-4 w-4" />
           </button>
-          
+
           <button
             onClick={onDeleteCurrentChat}
             className="glass-button p-2 rounded-lg text-red-400 hover:bg-red-500/20"
@@ -282,7 +292,6 @@ const ChatArea = ({
         </div>
       </div>
 
-      {/* Messages */}
       <div className="flex-1 overflow-y-auto custom-scrollbar p-4 space-y-4">
         {activeChatSession.messages.length === 0 ? (
           <div className="flex items-center justify-center h-full">
@@ -312,12 +321,12 @@ const ChatArea = ({
                 `}
               >
                 {renderMessageContent(message)}
-                
+
                 <div className="flex items-center justify-between mt-2 pt-2 border-t border-white/10">
                   <span className="text-xs text-white/50">
                     {new Date(message.timestamp).toLocaleTimeString()}
                   </span>
-                  
+
                   <button
                     onClick={() => copyToClipboard(message.text)}
                     className="opacity-0 group-hover:opacity-100 glass-button p-1 rounded text-white/70 hover:text-white"
@@ -330,7 +339,7 @@ const ChatArea = ({
             </div>
           ))
         )}
-        
+
         {isLoading && (
           <div className="flex justify-start">
             <div className="glass-panel p-4 rounded-lg">
@@ -341,11 +350,10 @@ const ChatArea = ({
             </div>
           </div>
         )}
-        
+
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Quick Prompts */}
       {showQuickPrompts && quickPrompts.length > 0 && (
         <div className="p-4 border-t border-white/10">
           <div className="flex items-center justify-between mb-2">
@@ -371,7 +379,6 @@ const ChatArea = ({
         </div>
       )}
 
-      {/* Input Area */}
       <div className="p-4 border-t border-white/10">
         <div className="flex items-end space-x-2">
           {quickPrompts.length > 0 && (
@@ -385,7 +392,7 @@ const ChatArea = ({
               <Zap className="h-5 w-5" />
             </button>
           )}
-          
+
           <div className="flex-1 relative">
             <textarea
               ref={inputRef}
@@ -405,7 +412,7 @@ const ChatArea = ({
                 e.target.style.height = Math.min(e.target.scrollHeight, 120) + 'px';
               }}
             />
-            
+
             <button
               onClick={() => handleSendMessage()}
               disabled={!inputText.trim() || isLoading}
@@ -425,4 +432,3 @@ const ChatArea = ({
 };
 
 export default ChatArea;
-
