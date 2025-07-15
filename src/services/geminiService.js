@@ -1,6 +1,6 @@
 // Gemini AI service for chat functionality
 
-const API_KEY = import.meta.env.VITE_API_KEY || process.env.VITE_API_KEY;
+const API_KEY = process.env.VITE_API_KEY;
 let apiKeyError = null;
 
 if (!API_KEY) {
